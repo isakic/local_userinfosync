@@ -45,7 +45,7 @@ function userinfosync_request_user_info($url, $usernames, $fieldnames) {
     $encryptedrequest = mnet_encrypt_message($signedrequest, $remotecertificate);
 
     $curl = new curl();
-    $rawresponse = $curl->post("http://localhost/moodle-idp/local/userinfosync/server.php", array('request' => $encryptedrequest));
+    $rawresponse = $curl->post("$url/local/userinfosync/server.php", array('request' => $encryptedrequest));
 
     if ($rawresponse == false) {
         return false;
