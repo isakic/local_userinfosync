@@ -16,165 +16,224 @@
 
 /**
  * @package local
- * @subpackage userinfosync
+ * @subpackage userinfosync_old
  * @copyright 2013 Ivan Šakić
  * @license http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
-require_once($CFG->dirroot . '/mnet/environment.php');
-require_once($CFG->dirroot . '/mnet/lib.php');
-require_once('client.php');
+require_once($CFG->dirroot . '/lib/filelib.php');
 
 /**
- * @param $request
- * @return bool|string
+ * Class userinfosync_crypt
  */
-function userinfosync_strip_encryption($request) {
-    $crypt_parser = new mnet_encxml_parser();
-    $crypt_parser->parse($request);
+class userinfosync_crypt {
+    private $privatekeyres;
+    private $publickeyres;
 
-    if (!$crypt_parser->payload_encrypted) {
-        return $request;
-    }
-    $key  = array_pop($crypt_parser->cipher);
-    $data = array_pop($crypt_parser->cipher);
-    $crypt_parser->free_resource();
-
-    $payload = '';
-
-    $mnetenvironment = get_mnet_environment();
-    $open = openssl_open(base64_decode($data), $payload, base64_decode($key), $mnetenvironment->get_private_key());
-    if ($open) {
-        return $payload;
-    }
-
-    $openssl_history = get_config('mnet', 'openssl_history');
-    if (empty($openssl_history)) {
-        $openssl_history = array();
-        set_config('openssl_history', serialize($openssl_history), 'mnet');
-    } else {
-        $openssl_history = unserialize($openssl_history);
-    }
-    foreach ($openssl_history as $keyset) {
-        $keyresource = openssl_pkey_get_private($keyset['keypair_PEM']);
-        $open = openssl_open(base64_decode($data), $payload, base64_decode($key), $keyresource);
-        if ($open) {
-            return $payload;
+    public function userinfosync_crypt() {
+        $keypair = unserialize(get_config('userinfosync', 'resource'));
+        if (!$keypair) {
+            $resource = openssl_pkey_new();
+            $keypair = array(
+                'private' => $this->get_private_key($resource),
+                'public' => $this->get_public_key($resource),
+            );
+            set_config('resource', serialize($keypair), 'userinfosync');
+        } else {
+            $this->privatekeyres = openssl_pkey_get_private($keypair['private']);
+            $this->publickeyres = openssl_pkey_get_public($keypair['public']);
         }
     }
 
-    return false;
-}
-
-/**
- * @param $plaintextmessage
- * @return bool|string
- */
-function userinfosync_strip_signature($plaintextmessage) {
-    global $DB;
-
-    $sig_parser = new mnet_encxml_parser();
-    $sig_parser->parse($plaintextmessage);
-
-    if ($sig_parser->signature == '') {
-        return $plaintextmessage;
+    public function get_private_key($resource = null) {
+        if (!$resource) {
+            $resource = $this->privatekeyres;
+        }
+        $privatekey = false;
+        openssl_pkey_export($resource, $privatekey);
+        return $privatekey;
     }
 
-    $payload = base64_decode($sig_parser->data_object);
-    $signature = base64_decode($sig_parser->signature);
-    $certificate = $DB->get_field('mnet_host', 'public_key', array('wwwroot' => $sig_parser->remote_wwwroot));
+    public function get_public_key($resource = null) {
+        if (!$resource) {
+            $resource = $this->publickeyres;
+        }
+        $details = openssl_pkey_get_details($resource);
+        return isset($details['key']) ? $details['key'] : false;
+    }
 
-    if ($certificate == false) {
+    public function verify_peer($url) {
+        $trustedpeers = explode("\n", get_config('moodle', 'userinfosync_trustedpeers'));
+        return array_search($url, $trustedpeers) !== false;
+    }
+
+    public function get_public_key_for_url($url) {
+        global $CFG;
+        $myurl = $CFG->wwwroot;
+        $curl = new curl();
+        if (!$remotepublickey = $curl->post("$url/local/userinfosync/requestkey.php", array('url' => base64_encode($myurl)))) {
+            $this->report_error("Could not retrieve remote peer public key!");
+        }
+        if (!$remotepublickeyres = openssl_pkey_get_public($remotepublickey)) {
+            $this->report_error("Retrieved remote peer public key is corrupted!");
+        }
+
+        return $remotepublickeyres;
+    }
+
+    /**
+     * @param  $payload             mixed   a string to be sealed
+     * @param  $remotepublickeyres  mixed   resource handle of the peer's public key
+     * @return string                       sealed message
+     */
+    public function encrypt_message($payload, $remotepublickeyres) {
+        $this->clear_openssl_errors();
+
+        if (!openssl_sign($payload, $signature, $this->privatekeyres)) {
+            $this->report_error("Could not create signature!");
+        }
+        $encodedsignature = base64_encode($signature);
+        if (!openssl_seal($payload, $encryptedpayload, $encryptedkey, array($remotepublickeyres))) {
+            $this->report_error("Could not encrypt the symmetric key!");
+        }
+        $encodedencryptedpayload = base64_encode($encryptedpayload);
+        $encodedkey = base64_encode($encryptedkey[0]);
+        $message = base64_encode(serialize(array($encodedsignature, $encodedkey, $encodedencryptedpayload)));
+        return $message;
+    }
+
+    /**
+     * @param  $message             mixed   a message to be opened
+     * @param  $remotepublickeyres  mixed   resource handle of the peer's public key
+     * @return string                       message payload
+     */
+    public function decrypt_message($message, $remotepublickeyres) {
+        $this->clear_openssl_errors();
+
+        list($encodedsignature, $encodedencryptedkey, $encodedencryptedpayload) = unserialize(base64_decode($message));
+        $signature = base64_decode($encodedsignature);
+        $encryptedkey = base64_decode($encodedencryptedkey);
+        $encryptedpayload = base64_decode($encodedencryptedpayload);
+
+        if (!openssl_open($encryptedpayload, $payload, $encryptedkey, $this->privatekeyres)) {
+            $this->report_error("Could open the payload!");
+        }
+
+        if (!openssl_verify($payload, $signature, $remotepublickeyres)) {
+            $this->report_error("Could not verify signature!");
+        }
+
         return $payload;
     }
 
-    $signature_verified = openssl_verify($payload, $signature, $certificate);
-    $sig_parser->free_resource();
+    private function report_error($error_message) {
+        debugging($error_message . $this->format_openssl_errors());
+    }
 
-    if ($signature_verified) {
-        return $payload;
-    } else {
-        return false;
+    private function clear_openssl_errors() {
+        while ($msg = openssl_error_string());
+    }
+
+    private function format_openssl_errors() {
+        $message = '';
+        while ($msg = openssl_error_string()) {
+            $message .= ' <br/ >' . $msg;
+        }
+        return $message;
     }
 }
 
-/**
- * @param array $usernames
- * @param array $fieldnames
- * @return array
- */
-function userinfosync_get_local_user_info(array $usernames, array $fieldnames) {
-    file_put_contents('C:\wamp\www\moodle\usernames.txt', print_r($usernames, true));
-    file_put_contents('C:\wamp\www\moodle\fieldnames.txt', print_r($fieldnames, true));
-    global $DB;
-    list($insql, $params) = $DB->get_in_or_equal($usernames, SQL_PARAMS_NAMED);
-    $query = "SELECT u.username, u.id
+class userinfosync {
+
+    public static function get_local_user_info(array $usernames, array $fieldnames) {
+        global $DB;
+        list($insql, $params) = $DB->get_in_or_equal($usernames, SQL_PARAMS_NAMED);
+        $query = "SELECT u.username, u.id
                 FROM {user} u
                WHERE u.username $insql";
-    $usernames = $DB->get_records_sql_menu($query, $params);
+        $usernames = $DB->get_records_sql_menu($query, $params);
 
-    $data = array();
-    list($insql, $params) = $DB->get_in_or_equal($fieldnames, SQL_PARAMS_NAMED);
-    file_put_contents('C:\wamp\www\moodle\insql.txt', print_r($params, true));
-    foreach ($usernames as $username => $userid) {
-        $query = "SELECT f.shortname, d.data
+        $data = array();
+        list($insql, $params) = $DB->get_in_or_equal($fieldnames, SQL_PARAMS_NAMED);
+        foreach ($usernames as $username => $userid) {
+            $query = "SELECT f.shortname, d.data
                     FROM {user_info_field} f
               INNER JOIN {user_info_data} d ON f.id = d.fieldid
                    WHERE d.userid = :userid
                      AND f.shortname $insql";
-        $userinfo = $DB->get_records_sql_menu($query, $params + array('userid' => $userid));
-        $data[$username] = $userinfo;
-    }
-    file_put_contents('C:\wamp\www\moodle\fields.txt', print_r($data, true));
-    return $data;
-}
+            $userinfo = $DB->get_records_sql_menu($query, $params + array('userid' => $userid));
+            $data[$username] = $userinfo;
+        }
 
-/**
- * @param $userids
- */
-function userinfosync_update_user_fields($userids) {
-    global $DB;
-
-    if (empty($userids)) {
-        return;
+        return $data;
     }
 
-    list($insql, $params) = $DB->get_in_or_equal($userids);
-    $query = "SELECT u.id, u.username, u.mnethostid
+    public static function update_user_fields($userids) {
+        global $DB;
+
+        if (empty($userids)) {
+            return;
+        }
+
+        list($insql, $params) = $DB->get_in_or_equal($userids);
+        $query = "SELECT u.id, u.username, u.mnethostid
                     FROM {user} u
               INNER JOIN {mnet_host} h ON u.mnethostid = h.id
                    WHERE u.id $insql
                      AND u.auth LIKE 'mnet'";
-    $results = $DB->get_records_sql($query, $params);
+        $results = $DB->get_records_sql($query, $params);
 
-    $hostidtousers = array();
-    foreach ($results as $result) {
-        if (!isset($hostidtousers[$result->mnethostid])) {
-            $hostidtousers[$result->mnethostid] = array();
+        $hostidtousers = array();
+        foreach ($results as $result) {
+            if (!isset($hostidtousers[$result->mnethostid])) {
+                $hostidtousers[$result->mnethostid] = array();
+            }
+            $hostidtousers[$result->mnethostid][] = $result->username;
         }
-        $hostidtousers[$result->mnethostid][] = $result->username;
-    }
 
-    $fieldnames = $DB->get_records_select_menu('user_info_field', '1', array('id', 'shortname'));
+        $fieldnames = $DB->get_records_select_menu('user_info_field', '1', array('id', 'shortname'));
 
-    foreach ($hostidtousers as $hostid => $usernames) {
-        $url = $DB->get_field('mnet_host', 'wwwroot', array('id' => $hostid));
-        $userdata = userinfosync_request_user_info($url, $usernames, $fieldnames);
-        foreach ($userdata as $username => $fields) {
-            $userid = $DB->get_field('user', 'id', array('username' => $username, 'auth' => 'mnet', 'mnethostid' => $hostid));
-            foreach ($fields as $fieldname => $data) {
-                $fieldid = array_search($fieldname, $fieldnames);
-                if ($DB->record_exists('user_info_data', array('userid' => $userid, 'fieldid' => $fieldid))) {
-                    $DB->set_field('user_info_data', 'data', $data, array('userid' => $userid, 'fieldid' => $fieldid));
-                } else {
-                    $record = array(
-                        'userid' => $userid,
-                        'fieldid' => $fieldid,
-                        'data' => $data,
-                    );
-                    $DB->insert_record('user_info_data', (object) $record);
+        foreach ($hostidtousers as $hostid => $usernames) {
+            $url = $DB->get_field('mnet_host', 'wwwroot', array('id' => $hostid));
+            $userdata = self::request_user_info($url, $usernames, $fieldnames);
+            foreach ($userdata as $username => $fields) {
+                $userid = $DB->get_field('user', 'id', array('username' => $username, 'auth' => 'mnet', 'mnethostid' => $hostid));
+                foreach ($fields as $fieldname => $data) {
+                    $fieldid = array_search($fieldname, $fieldnames);
+                    if ($DB->record_exists('user_info_data', array('userid' => $userid, 'fieldid' => $fieldid))) {
+                        $DB->set_field('user_info_data', 'data', $data, array('userid' => $userid, 'fieldid' => $fieldid));
+                    } else {
+                        $record = array(
+                            'userid' => $userid,
+                            'fieldid' => $fieldid,
+                            'data' => $data,
+                        );
+                        $DB->insert_record('user_info_data', (object) $record);
+                    }
                 }
             }
         }
+    }
+
+    public static function request_user_info($url, $usernames, $fieldnames) {
+        global $CFG;
+
+        if (!extension_loaded('openssl') ||
+            !extension_loaded('curl')) {
+            return false;
+        }
+
+        $crypt = new userinfosync_crypt();
+        $remotepublickeyres = $crypt->get_public_key_for_url($url);
+        $payload = serialize(array($usernames, $fieldnames));
+        $request = $crypt->encrypt_message($payload, $remotepublickeyres);
+        $curl = new curl();
+
+        if (!$response = $curl->post("$url/local/userinfosync/server.php", array('url' => base64_encode($CFG->wwwroot), 'request' => $request))) {
+            return false;
+        }
+
+        $decryptedresponse = $crypt->decrypt_message($response, $remotepublickeyres);
+        return unserialize($decryptedresponse);
     }
 }

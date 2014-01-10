@@ -22,26 +22,18 @@
  */
 
 require_once('../../config.php');
-require_once($CFG->dirroot . '/mnet/environment.php');
-require_once($CFG->dirroot . '/mnet/lib.php');
 require_once('lib.php');
 
-$mnetenvironment = get_mnet_environment();
-$mnetenvironment->get_keypair();
-
+$url = base64_decode(required_param('url', PARAM_RAW));
 $request = required_param('request', PARAM_RAW);
-$plaintextmessage = userinfosync_strip_encryption($request);
-$xmlrpcrequest = userinfosync_strip_signature($plaintextmessage);
 
-$method = '';
-$params = xmlrpc_decode_request($xmlrpcrequest, $method);
-$response = userinfosync_get_local_user_info($params[1], $params[2]);
+$crypt = new userinfosync_crypt();
+$remotepublickeyres = $crypt->get_public_key_for_url($url);
+$payload = $crypt->decrypt_message($request, $remotepublickeyres);
+$params = unserialize($payload);
+$result = userinfosync::get_local_user_info($params[0], $params[1]);
+$payload = serialize($result);
+$response = $crypt->encrypt_message($payload, $remotepublickeyres);
 
-$responsetext = xmlrpc_encode($response);
-$signedresponse = mnet_sign_message($responsetext);
-$remotecertificate = $DB->get_field('mnet_host', 'public_key', array('wwwroot' => $params[0]));
-$encryptedresponse = mnet_encrypt_message($signedresponse, $remotecertificate);
-
-echo $encryptedresponse;
+echo $response;
 die;
-

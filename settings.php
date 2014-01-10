@@ -13,14 +13,19 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with Moodle. If not, see <http://www.gnu.org/licenses/>.
-
+ 
 /**
  * @package local
  * @subpackage userinfosync
  * @copyright 2013 Ivan Šakić
  * @license http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
+defined('MOODLE_INTERNAL') or die;
 
-$string['pluginname'] = 'Benutzerdatensynchronisierung';
-$string['trustedpeers'] = 'Vertraute Peers';
-$string['configtrustedpeers'] = 'Geben Sie URLs der vertrauten Peers für Benutzerdatensynchronisierung';
+if ($hassiteconfig) {
+    $userinfosyncsettings = new admin_settingpage('local_userinfosync', get_string('pluginname', 'local_userinfosync'));
+    // trusted peers
+    $userinfosyncsettings->add(new admin_setting_configtextarea('userinfosync_trustedpeers', get_string('trustedpeers', 'local_userinfosync'), get_string('configtrustedpeers', 'local_userinfosync'), ''));
+
+    $ADMIN->add('localplugins', $userinfosyncsettings);
+}

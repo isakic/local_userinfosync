@@ -16,9 +16,11 @@
 
 /**
  * @package local
- * $subpackage userinfosync
+ * @subpackage userinfosync
  * @copyright 2013 Ivan Šakić
  * @license http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
 $string['pluginname'] = 'User info synchronization plugin';
+$string['trustedpeers'] = 'Trusted peers';
+$string['configtrustedpeers'] = 'Enter URLs of trusted peers for user info synchronization';
