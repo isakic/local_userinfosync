@@ -22,5 +22,8 @@
  */
 
 $string['pluginname'] = 'Benutzerdatensynchronisierung';
-$string['trustedpeers'] = 'Vertraute Peers';
-$string['configtrustedpeers'] = 'Geben Sie URLs der vertrauten Peers für Benutzerdatensynchronisierung';
+$string['trustedpeers'] = 'Vertrauenswürdige Peers';
+$string['configtrustedpeers'] = 'Geben Sie URLs der zu vertrauenden Peers für Benutzerdatensynchronisierung an. Beispiel: http://www.example.com/moodle';
+$string['hosttype'] = 'Is this moodle site the identity provider?';
+$string['confighosttype'] = 'Enable this option, if this site provides user profile data to other moodle sites. Enter the moodle sites that are fetching user profile data from this site below.';
+
