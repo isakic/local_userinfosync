@@ -24,8 +24,9 @@ defined('MOODLE_INTERNAL') or die;
 
 if ($hassiteconfig) {
     $userinfosyncsettings = new admin_settingpage('local_userinfosync', get_string('pluginname', 'local_userinfosync'));
+    $userinfosyncsettings->add(new admin_setting_configcheckbox('userinfosync_hosttype', get_string('hosttype', 'local_userinfosync'), get_string('confighosttype','local_userinfosync'), 'idp', 'idp','subscriber'));
     // trusted peers
-    $userinfosyncsettings->add(new admin_setting_configtextarea('userinfosync_trustedpeers', get_string('trustedpeers', 'local_userinfosync'), get_string('configtrustedpeers', 'local_userinfosync'), ''));
-
+    $userinfosyncsettings->add(new admin_setting_configtextarea('userinfosync_trustedpeers', get_string('trustedpeers', 'local_userinfosync'), get_string('configtrustedpeers', 'local_userinfosync'), '')); 
+    
     $ADMIN->add('localplugins', $userinfosyncsettings);
 }
