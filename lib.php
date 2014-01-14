@@ -188,7 +188,6 @@ class userinfosync {
 		if (empty($userids) || get_config('moodle', 'userinfosync_hosttype') === 'idp') {
 			return;
 		}
-
 		list($insql, $params) = $DB->get_in_or_equal($userids);
 		$query = "SELECT u.id, u.username, u.mnethostid
 		FROM {user} u
@@ -275,8 +274,12 @@ function local_userinfosync_cron(){
 	if (get_config('moodle', 'userinfosync_hosttype') === 'idp') {
 		return;
 	}
-	$lastcron = $DB->get_field_sql('SELECT MAX(lastcron) FROM {modules}');
-	$select = 'lastlogin >= '.$lastcron;
+	$sql = '
+	SELECT MAX(lastcron)
+  	FROM {modules}
+	WHERE lastcron < ( SELECT MAX(lastcron) FROM {modules} )';
+	$lastcron = $DB->get_field_sql($sql);
+	$select = 'lastaccess >= '.$lastcron;
 	$params = array('auth' => 'mnet');
 	$userids = $DB->get_fieldset_select('user', 'id', $select, $params);
 	userinfosync::update_user_fields($userids);
